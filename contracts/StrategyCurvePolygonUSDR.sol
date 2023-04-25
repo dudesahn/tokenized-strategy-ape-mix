@@ -22,33 +22,65 @@ import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol
 
 // NOTE: To implement permissioned functions you can use the onlyManagement and onlyKeepers modifiers
 
-contract Strategy is BaseTokenizedStrategy {
+contract StrategyCurvePolygonUSDR is BaseTokenizedStrategy {
     using SafeERC20 for ERC20;
+
+    /* ========== STATE VARIABLES ========== */
+    // these should stay the same across different wants.
+
+    // curve infrastructure contracts
+    ICurveFi public constant gauge = ICurveFi(0x875ce7e0565b4c8852ca2a9608f27b7213a90786);
+
+    /// @notice Curve's meta-tricrypto zap. Use this to sell CRV for USDT and deposit.
+    ICurveFi public constant metaZap = ICurveFi(0x3d8EADb739D1Ef95dd53D718e4810721837c69c1);
+    
+    ICurveFi public constant threeZap = ICurveFi(0x5ab5C56B9db92Ba45a0B46a207286cD83C15C939);
+
+    IERC20 public constant crv = IERC20(0x172370d5Cd63279eFa6d502DAB29171933a610AF);
+    IERC20 public constant usdt = IERC20(0xc2132D05D31c914a87C6611C10748AEb04B58e8F);
+    ICurveFi public constant mintr = ICurveFi(0xabC000d88f23Bb45525E447528DBF656A9D55bf5);
+
+    /* ========== CONSTRUCTOR ========== */
 
     constructor(
         address _asset,
         string memory _name
-    ) BaseTokenizedStrategy(_asset, _name) {}
+    ) BaseTokenizedStrategy(_asset, _name) {
+        // these are our standard approvals. want = Curve LP token
+        want.approve(address(_gauge), type(uint256).max);
+        crv.approve(address(metaZap), type(uint256).max);
+        usdt.approve(address(threeZap), type(uint256).max);
+    }
 
-    /*//////////////////////////////////////////////////////////////
-                NEEDED TO BE OVERRIDEN BY STRATEGIST
-    //////////////////////////////////////////////////////////////*/
+    /* ========== VIEWS ========== */
+
+    ///@notice How much want we have staked in Curve's gauge
+    function stakedBalance() public view returns (uint256) {
+        return IERC20(address(gauge)).balanceOf(address(this));
+    }
+
+    ///@notice Balance of want sitting in our strategy
+    function balanceOfWant() public view returns (uint256) {
+        return want.balanceOf(address(this));
+    }
 
     /**
      * @dev Should invest up to '_amount' of 'asset'.
      *
      * This function is called at the end of a {deposit} or {mint}
      * call. Meaning that unless a whitelist is implemented it will
-     * be entirely permsionless and thus can be sandwhiched or otherwise
+     * be entirely permsionless and thus can be sandwiched or otherwise
      * manipulated.
      *
      * @param _amount The amount of 'asset' that the strategy should attemppt
      * to deposit in the yield source.
      */
     function _invest(uint256 _amount) internal override {
-        // TODO: implement deposit logice EX:
-        //
-        //      lendingpool.deposit(asset, _amount ,0);
+        // Deposit to the gauge if we have any
+        uint256 _toInvest = balanceOfWant();
+        if (_toInvest > 0) {
+            gauge.deposit(_toInvest);
+        }
     }
 
     /**
@@ -72,10 +104,12 @@ contract Strategy is BaseTokenizedStrategy {
      *
      * @param _amount, The amount of 'asset' to be freed.
      */
+     
     function _freeFunds(uint256 _amount) internal override {
-        // TODO: implement withdraw logic EX:
-        //
-        //      lendingPool.withdraw(asset, _amount);
+        uint256 _stakedBal = stakedBalance();
+        if (_stakedBal > 0) {
+            gauge.withdraw(Math.min(_stakedBal, _amount));
+        }
     }
 
     /**
@@ -99,12 +133,23 @@ contract Strategy is BaseTokenizedStrategy {
      * @return _invested A trusted and accurate account for the total
      * amount of 'asset' the strategy currently holds.
      */
+     
     function _totalInvested() internal override returns (uint256 _invested) {
-        // TODO: Implement harvesting logic and accurate accounting EX:
-        //
-        //      _claminAndSellRewards();
-        //      _invested = aToken.balanceof(address(this)) + ERC20(asset).balanceOf(address(this));
-        _invested = ERC20(asset).balanceOf(address(this));
+        
+        // Mint CRV emissions
+        mintr.mint(address(gauge));
+        
+        uint256 crvBalance = crv.balanceOf(address(this));
+        if (crvBalance > 0) {
+            metaZap.exchange(0xc7c939A474CB10EB837894D1ed1a77C61B268Fa7, 0, 3, crvBalance, 0, true);
+        }
+        
+        uint256 usdtBalance = usdt.balanceOf(address(this));
+        if (usdtBalance > 0) {
+            threeZap.add_liquidity(address(want), [0, 0, 0, usdtBalance], 0);
+        }
+
+        _invested = balanceOfWant() + stakedBalance();
     }
 
     /*//////////////////////////////////////////////////////////////
