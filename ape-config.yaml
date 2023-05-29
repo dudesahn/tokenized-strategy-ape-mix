@@ -6,26 +6,31 @@ plugins:
   - name: hardhat
   - name: infura
   - name: alchemy
+  - name: vyper
 
 default_ecosystem: ethereum
 
 dependencies:
   - name: openzeppelin
     github: OpenZeppelin/openzeppelin-contracts
-    version: 4.8.2
+    ref: 4.8.2
   - name: tokenized-strategy
     github: yearn/tokenized-strategy
-    branch: test
+    ref: test
     contracts_folder: src
     exclude:
       -  src/test/**/*
   - name: periphery
     github: schlagonia/tokenized-strategy-periphery
-    branch: master
+    ref: master
+  - name: yearnvaults
+    github: yearn/yearn-vaults
+    ref: master
 
 solidity:
   import_remapping:
     - "@openzeppelin/contracts=openzeppelin/v4.8.2"
+    - "@yearnvaults/contracts=yearnvaults/v0.4.6"
     - "@tokenized-strategy=tokenized-strategy/test"
     - "@periphery=periphery/master"
 

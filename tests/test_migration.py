@@ -1,0 +1,219 @@
+import pytest
+import ape
+from ape import Contract, project, config, chain, accounts
+from utils import harvest_strategy
+
+
+# test migrating a strategy
+def test_migration(
+    gov,
+    token,
+    vault,
+    whale,
+    strategy,
+    amount,
+    sleep_time,
+    contract_name,
+    profit_whale,
+    profit_amount,
+    target,
+    trade_factory,
+    use_yswaps,
+    lusd_whale,
+    is_slippery,
+    no_profit,
+):
+    ## deposit to the vault after approving
+    token.approve(vault, 2**256 - 1, sender=whale)
+    vault.deposit(amount, sender=whale)
+    (profit, loss) = harvest_strategy(
+        use_yswaps,
+        strategy,
+        token,
+        gov,
+        profit_whale,
+        profit_amount,
+        target,
+    )
+
+    # record our current strategy's assets
+    total_old = strategy.estimatedTotalAssets()
+
+    # sleep to collect earnings
+    chain.mine(sleep_time)
+
+    ######### THIS WILL NEED TO BE UPDATED BASED ON STRATEGY CONSTRUCTOR #########
+    new_strategy = gov.deploy(
+        contract_name, vault, trade_factory, 10_000 * 10**6, 50_000 * 10**6
+    )
+
+    # can we harvest an unactivated strategy? should be no
+    tx = new_strategy.harvestTrigger(0, sender=gov)
+    print("\nShould we harvest? Should be False.", tx)
+    assert tx == False
+
+    ######### ADD LOGIC TO TEST CLAIMING OF ASSETS FOR TRANSFER TO NEW STRATEGY AS NEEDED #########
+    lusd = project.IERC20.at(strategy.lusd())
+    weth = project.IERC20.at(strategy.weth())
+    lusd.transfer(strategy, 100 * 10**18, sender=lusd_whale)
+    lusd_whale.transfer(strategy, 2 * 10**18)
+
+    # migrate our old strategy
+    vault.migrateStrategy(strategy, new_strategy, sender=gov)
+
+    ####### ADD LOGIC TO MAKE SURE ASSET TRANSFER WENT AS EXPECTED #######
+    assert weth.balanceOf(strategy) == 0
+    assert lusd.balanceOf(strategy) == 0
+    assert strategy.balance == 0
+    assert weth.balanceOf(new_strategy) > 0
+    assert lusd.balanceOf(new_strategy) > 0
+
+    # assert that our old strategy is empty
+    updated_total_old = strategy.estimatedTotalAssets()
+    assert updated_total_old == 0
+
+    # harvest to get funds back in new strategy
+    (profit, loss) = harvest_strategy(
+        use_yswaps,
+        new_strategy,
+        token,
+        gov,
+        profit_whale,
+        profit_amount,
+        target,
+    )
+    new_strat_balance = new_strategy.estimatedTotalAssets()
+
+    # confirm that we have the same amount of assets in our new strategy as old
+    if no_profit and is_slippery:
+        assert pytest.approx(new_strat_balance, rel=RELATIVE_APPROX) == total_old
+    else:
+        assert new_strat_balance >= total_old
+
+    # record our new assets
+    vault_new_assets = vault.totalAssets()
+
+    # simulate earnings
+    chain.mine(sleep_time)
+    chain.mine(1)
+
+    # Test out our migrated strategy, confirm we're making a profit
+    (profit, loss) = harvest_strategy(
+        use_yswaps,
+        new_strategy,
+        token,
+        gov,
+        profit_whale,
+        profit_amount,
+        target,
+    )
+
+    vault_newer_assets = vault.totalAssets()
+    # confirm we made money, or at least that we have about the same
+    if is_slippery and no_profit:
+        assert (
+            pytest.approx(vault_newer_assets, rel=RELATIVE_APPROX) == vault_new_assets
+        )
+    else:
+        assert vault_newer_assets >= vault_new_assets
+
+
+# make sure we can still migrate when we don't have funds
+def test_empty_migration(
+    gov,
+    token,
+    vault,
+    whale,
+    strategy,
+    amount,
+    sleep_time,
+    contract_name,
+    profit_whale,
+    profit_amount,
+    target,
+    trade_factory,
+    use_yswaps,
+    is_slippery,
+    RELATIVE_APPROX,
+):
+    ## deposit to the vault after approving
+    token.approve(vault, 2**256 - 1, sender=whale)
+    vault.deposit(amount, sender=whale)
+    (profit, loss) = harvest_strategy(
+        use_yswaps,
+        strategy,
+        token,
+        gov,
+        profit_whale,
+        profit_amount,
+        target,
+    )
+
+    # record our current strategy's assets
+    total_old = strategy.estimatedTotalAssets()
+
+    # sleep to collect earnings
+    chain.mine(sleep_time)
+
+    ######### THIS WILL NEED TO BE UPDATED BASED ON STRATEGY CONSTRUCTOR #########
+    new_strategy = gov.deploy(
+        contract_name, vault, trade_factory, 10_000 * 10**6, 50_000 * 10**6
+    )
+
+    # set our debtRatio to zero so our harvest sends all funds back to vault
+    vault.updateStrategyDebtRatio(strategy, 0, sender=gov)
+    (profit, loss) = harvest_strategy(
+        use_yswaps,
+        strategy,
+        token,
+        gov,
+        profit_whale,
+        profit_amount,
+        target,
+    )
+
+    # yswaps needs another harvest to get the final bit of profit to the vault
+    if use_yswaps:
+        (profit, loss) = harvest_strategy(
+            use_yswaps,
+            strategy,
+            token,
+            gov,
+            profit_whale,
+            profit_amount,
+            target,
+        )
+
+    # shouldn't have any assets, unless we have slippage, then this might leave dust
+    # for complete emptying in this situtation, use emergencyExit
+    if is_slippery:
+        assert pytest.approx(strategy.estimatedTotalAssets(), rel=RELATIVE_APPROX) == 0
+        strategy.setEmergencyExit(sender=gov)
+
+        # turn off health check since taking profit on no debt
+        strategy.setDoHealthCheck(False, sender=gov)
+        (profit, loss) = harvest_strategy(
+            use_yswaps,
+            strategy,
+            token,
+            gov,
+            profit_whale,
+            profit_amount,
+            target,
+        )
+
+    assert strategy.estimatedTotalAssets() == 0
+
+    # make sure we transferred strat params over
+    total_debt = vault.strategies(strategy)["totalDebt"]
+    debt_ratio = vault.strategies(strategy)["debtRatio"]
+
+    # migrate our old strategy
+    vault.migrateStrategy(strategy, new_strategy, sender=gov)
+
+    # new strategy should also be empty
+    assert new_strategy.estimatedTotalAssets() == 0
+
+    # make sure we took our gains and losses with us
+    assert total_debt == vault.strategies(new_strategy)["totalDebt"]
+    assert debt_ratio == vault.strategies(new_strategy)["debtRatio"] == 0
