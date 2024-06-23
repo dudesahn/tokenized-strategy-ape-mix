@@ -37,10 +37,17 @@ solidity:
 ethereum:
   default_network: mainnet-fork
   mainnet_fork:
-    default_provider: hardhat
+    default_provider: foundry
+    transaction_acceptance_timeout: 600  # 5 minutes
 
 hardhat:
   fork:
     ethereum:
       mainnet:
-        upstream_provider: infura
+        upstream_provider: alchemy
+
+foundry:
+  fork:
+    ethereum:
+      mainnet:
+        upstream_provider: alchemy

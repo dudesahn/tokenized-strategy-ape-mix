@@ -1,149 +1,176 @@
 import pytest
-from ape import Contract, project
+import ape
+from ape import chain, Contract
+from ape.utils import ZERO_ADDRESS
 
+DAY = 24 * 60 * 60
+WEEK = DAY * 7
 
-############ CONFIG FIXTURES ############
-
-# Adjust the string based on the `asset` your strategy will use
-# You may need to add the token address to `tokens` fixture.
+# Accounts
 @pytest.fixture(scope="session")
-def asset(tokens):
-    yield Contract(tokens["dai"])
-
-
-# Adjust the amount that should be used for testing based on `asset`.
-@pytest.fixture(scope="session")
-def amount(asset, user, whale):
-    amount = 100 * 10 ** asset.decimals()
-
-    asset.transfer(user, amount, sender=whale)
-    yield amount
-
-
-############ STANDARD FIXTURES ############
-
-
-@pytest.fixture(scope="session")
-def daddy(accounts):
-    yield accounts["0xFEB4acf3df3cDEA7399794D0869ef76A6EfAff52"]
-
-
-@pytest.fixture(scope="session")
-def user(accounts):
+def dev(accounts):
     yield accounts[0]
 
 
 @pytest.fixture(scope="session")
-def rewards(accounts):
-    yield accounts[1]
+def gov(accounts):
+    gov = accounts["0xFEB4acf3df3cDEA7399794D0869ef76A6EfAff52"]
+    gov.balance += 10**18
+    yield gov
 
 
 @pytest.fixture(scope="session")
-def management(accounts):
-    yield accounts[2]
+def ylockers_ms(accounts):
+    ms = accounts["0x4444AAAACDBa5580282365e25b16309Bd770ce4a"]
+    ms.balance += 10**18
+    yield ms
 
 
 @pytest.fixture(scope="session")
-def keeper(accounts):
-    yield accounts[3]
+def trade_factory(accounts):
+    ms = accounts["0xb634316E06cC0B358437CbadD4dC94F1D3a92B3b"]
+    ms.balance += 10**18
+    yield ms
 
 
 @pytest.fixture(scope="session")
-def tokens():
-    tokens = {
-        "weth": "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
-        "dai": "0x6B175474E89094C44Da98b954EedeAC495271d0F",
-        "usdc": "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
-    }
-    yield tokens
+def receiver1(project, gov, ylockers_ms, trade_factory):
+    print(f"GOV: {gov}")
+    receiver1 = gov.deploy(project.FeeBurner, ylockers_ms)
+    yield receiver1
 
 
 @pytest.fixture(scope="session")
-def whale(accounts):
-    # In order to get some funds for the token you are about to use,
-    # The Balancer vault stays steady ballin on almost all tokens
-    # NOTE: If `asset` is a balancer pool this may cause issues on amount checks.
-    yield accounts["0xBA12222222228d8Ba445958a75a0704d566BF2C8"]
+def receiver2(project, gov, ylockers_ms, reward_distributor, dev):
+    yield dev.deploy(project.Receiver2, gov, ylockers_ms, gov, reward_distributor)
 
 
 @pytest.fixture(scope="session")
-def weth(tokens):
-    yield Contract(tokens["weth"])
+def splitter(project, dev, receiver1, receiver2, gov):
+    discretionary_gauges = [
+        "0x05255C5BD33672b9FEA4129C13274D1E6193312d",  # YFI/ETH
+        "0x138cC21D15b7A06F929Fc6CFC88d2b830796F4f1",  # ETH/yETH
+    ]
+    ycrv_gauges = [
+        "0xEEBC06d495c96E57542A6d829184A907A02ef602",  # CRV/yCRV
+    ]
+    partner_gauges = [
+        "0x6070fBD4E608ee5391189E7205d70cc4A274c017",  # Threshold
+    ]
+    splitter = dev.deploy(
+        project.YCRVSplitter,
+        receiver1,
+        receiver2,
+        ycrv_gauges,
+        partner_gauges,
+        discretionary_gauges,
+    )
+    receiver1.setApprovedSpender(splitter, True, sender=gov)
+    yield splitter
 
 
 @pytest.fixture(scope="session")
-def weth_amount(user, weth):
-    weth_amount = 10 ** weth.decimals()
-    user.transfer(weth, weth_amount)
-    yield weth_amount
+def mock_proxy(accounts, project, gov, receiver1, splitter):
+    mock_proxy = gov.deploy(project.StrategyProxy, splitter)
+    voter = Contract(mock_proxy.proxy())
+    voter.setStrategy(mock_proxy, sender=gov)
+    assert mock_proxy.adminFeeRecipient() == splitter.address
+    # mock_proxy.setAdminFeeRecipient(receiver1, sender=gov)
+    yield mock_proxy
 
 
 @pytest.fixture(scope="session")
-def factory(strategy):
-    yield Contract(strategy.FACTORY())
+def reward_distributor():
+    yield Contract("0xB226c52EB411326CdB54824a88aBaFDAAfF16D3d")
 
 
 @pytest.fixture(scope="session")
-def set_protocol_fee(factory):
-    def set_protocol_fee(protocol_fee=0):
-        owner = factory.governance()
-        factory.set_protocol_fee_recipient(owner, sender=owner)
-        factory.set_protocol_fee_bps(protocol_fee, sender=owner)
-
-    yield set_protocol_fee
+def crvusd():
+    yield Contract("0xf939E0A03FB07F59A73314E73794Be0E57ac1b4E")
 
 
 @pytest.fixture(scope="session")
-def create_strategy(management, keeper, rewards):
-    def create_strategy(asset, performanceFee=1_000):
-        strategy = management.deploy(project.Strategy, asset, "yStrategy-Example")
-        strategy = project.IStrategyInterface.at(strategy.address)
-
-        strategy.setKeeper(keeper, sender=management)
-        strategy.setPerformanceFeeRecipient(rewards, sender=management)
-        strategy.setPerformanceFee(performanceFee, sender=management)
-
-        return strategy
-
-    yield create_strategy
+def crv():
+    yield Contract("0xD533a949740bb3306d119CC777fa900bA034cd52")
 
 
 @pytest.fixture(scope="session")
-def create_oracle(management):
-    def create_oracle(_management=management):
-        oracle = _management.deploy(project.StrategyAprOracle)
-
-        return oracle
-
-    yield create_oracle
+def spell():
+    yield Contract("0x090185f2135308BaD17527004364eBcC2D37e5F6")
 
 
 @pytest.fixture(scope="session")
-def strategy(asset, create_strategy):
-    strategy = create_strategy(asset)
-
-    yield strategy
+def gauge_controller():
+    yield Contract("0x2F50D538606Fa9EDD2B11E2446BEb18C9D5846bB")
 
 
 @pytest.fixture(scope="session")
-def oracle(create_oracle):
-    oracle = create_oracle()
-
-    yield oracle
-
-
-############ HELPER FUNCTIONS ############
+def yvcrvusd(splitter):
+    yield Contract(splitter.REWARD_TOKEN())
 
 
 @pytest.fixture(scope="session")
-def deposit(strategy, asset, user, amount):
-    def deposit(_strategy=strategy, _asset=asset, assets=amount, account=user):
-        _asset.approve(_strategy, assets, sender=account)
-        _strategy.deposit(assets, account, sender=account)
-
-    yield deposit
+def reward_token(splitter):
+    yield Contract(splitter.REWARD_TOKEN())
 
 
 @pytest.fixture(scope="session")
-def RELATIVE_APPROX():
-    yield 1e-5
+def new_fee_distributor():
+    yield Contract("0xD16d5eC345Dd86Fb63C6a9C43c517210F1027914")
+
+
+@pytest.fixture(scope="session")
+def voter(splitter, accounts):
+    voter = accounts[splitter.VOTER()]
+    voter.balance += 10**18
+    yield voter
+
+
+@pytest.fixture(scope="session")
+def crvusd_whale(accounts):
+    whale = accounts["0xA920De414eA4Ab66b97dA1bFE9e6EcA7d4219635"]
+    whale.balance += 10**18
+    yield whale
+
+
+@pytest.fixture(scope="session")
+def crv_whale(accounts):
+    whale = accounts["0xF977814e90dA44bFA03b6295A0616a897441aceC"]
+    whale.balance += 10**18
+    yield whale
+
+
+@pytest.fixture(scope="session")
+def spell_whale(accounts):
+    whale = accounts["0xF977814e90dA44bFA03b6295A0616a897441aceC"]
+    whale.balance += 10**18
+    yield whale
+
+
+@pytest.fixture(scope="session")
+def curve_dao(accounts):
+    curve_dao = accounts["0x40907540d8a6C65c637785e8f8B742ae6b0b9968"]
+    curve_dao.balance += 10**18
+    yield curve_dao
+
+
+@pytest.fixture(scope="function")
+def top_up_curve_fee_distributor(
+    new_fee_distributor, mock_proxy, crvusd, crvusd_whale, curve_dao, dev
+):
+    assert new_fee_distributor.address == mock_proxy.feeDistribution()
+
+    def top_up_curve_fee_distributor(
+        new_fee_distributor=new_fee_distributor,
+        crvusd=crvusd,
+        crvusd_whale=crvusd_whale,
+        dev=dev,
+    ):
+        crvusd.transfer(new_fee_distributor, 100_000 * 10**18, sender=crvusd_whale)
+        if not new_fee_distributor.can_checkpoint_token():
+            new_fee_distributor.toggle_allow_checkpoint_token(sender=curve_dao)
+        new_fee_distributor.checkpoint_token(sender=dev)
+        chain.pending_timestamp += WEEK
+        chain.mine()
+
+    yield top_up_curve_fee_distributor
