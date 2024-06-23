@@ -55,7 +55,9 @@ def test_fee_burner(
 
     # trade factory can't give themselves new token approvals!
     with ape.reverts("revert: not approved"):
-        fee_burner.giveTokenAllowance(trade_factory, [crv, crvusd], sender=trade_factory)
+        fee_burner.giveTokenAllowance(
+            trade_factory, [crv, crvusd], sender=trade_factory
+        )
 
     # accidentally pass in our own address, whoops
     with ape.reverts("revert: unapproved spender"):
