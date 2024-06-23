@@ -34,10 +34,10 @@ def trade_factory(accounts):
 
 
 @pytest.fixture(scope="session")
-def receiver1(project, gov, ylockers_ms, trade_factory):
+def fee_burner(project, gov, ylockers_ms, trade_factory):
     print(f"GOV: {gov}")
-    receiver1 = gov.deploy(project.FeeBurner, ylockers_ms)
-    yield receiver1
+    fee_burner = gov.deploy(project.FeeBurner, ylockers_ms)
+    yield fee_burner
 
 
 @pytest.fixture(scope="session")
@@ -46,7 +46,7 @@ def receiver2(project, gov, ylockers_ms, reward_distributor, dev):
 
 
 @pytest.fixture(scope="session")
-def splitter(project, dev, receiver1, receiver2, gov):
+def splitter(project, dev, fee_burner, receiver2, gov):
     discretionary_gauges = [
         "0x05255C5BD33672b9FEA4129C13274D1E6193312d",  # YFI/ETH
         "0x138cC21D15b7A06F929Fc6CFC88d2b830796F4f1",  # ETH/yETH
@@ -59,23 +59,23 @@ def splitter(project, dev, receiver1, receiver2, gov):
     ]
     splitter = dev.deploy(
         project.YCRVSplitter,
-        receiver1,
+        fee_burner,
         receiver2,
         ycrv_gauges,
         partner_gauges,
         discretionary_gauges,
     )
-    receiver1.setApprovedSpender(splitter, True, sender=gov)
+    fee_burner.setApprovedSpender(splitter, True, sender=gov)
     yield splitter
 
 
 @pytest.fixture(scope="session")
-def mock_proxy(accounts, project, gov, receiver1, splitter):
+def mock_proxy(accounts, project, gov, fee_burner, splitter):
     mock_proxy = gov.deploy(project.StrategyProxy, splitter)
     voter = Contract(mock_proxy.proxy())
     voter.setStrategy(mock_proxy, sender=gov)
     assert mock_proxy.adminFeeRecipient() == splitter.address
-    # mock_proxy.setAdminFeeRecipient(receiver1, sender=gov)
+    # mock_proxy.setAdminFeeRecipient(fee_burner, sender=gov)
     yield mock_proxy
 
 
